@@ -1,0 +1,13 @@
+{
+  "capabilities": [
+    "storage",
+    "mail"
+  ],
+  "id": "agentic-mail",
+  "integrity": {
+    "bundle_blake3": "a20861cca7ab86730a7c63ea30901f78f1b382dd648301c3959b7a684a2d9260"
+  },
+  "name": "Agentic Mail",
+  "schema": 1,
+  "version": "0.1.0"
+}

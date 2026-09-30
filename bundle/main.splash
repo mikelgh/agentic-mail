@@ -1,21 +1,101 @@
-// Agentic Mail - 智能邮件助手
-// 自动识别日程、提取时间地点、生成回复草稿
+// Agentic Mail v0.3 - 智能邮件助手
+// 行动卡片：日程变更对比 | 来源引用 | 可编辑回复 | 授权规则 | 完成态 | 订单追踪
 
 let account = nil
 let messages = []
-let analyzed_emails = []  // 已分析的邮件，包含提取的日程
+let analyzed_emails = []
 let current_email = nil
 let busy = false
-let status_text = ""
+let demo_mode = false
+let selected_tab = "inbox"
+let unread_count = 2
+let done_ids = []
+let rules = []
 
-// 日程识别关键词
-let calendar_keywords = ["会议", "meeting", "日程", "schedule", "时间", "time", "地点", "location", "邀请", "invite"]
+let calendar_keywords = ["会议", "meeting", "日程", "schedule", "时间", "time", "地点", "location", "邀请", "invite", "评审", "review"]
 let date_patterns = ["月", "日", "号", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "明天", "后天", "今天"]
 let time_patterns = ["点", ":", "时", "分", "am", "pm", "上午", "下午"]
+let change_markers = ["改为", "调整到", "提前到", "推迟到", "变更为", "改成"]
+let order_keywords = ["订单", "order", "发货", "shipped", "物流", "运单", "tracking", "快递", "delivery", "已寄出"]
 
-fn set_status(text) {
-    status_text = text
-    ui.status_label.set_text(text)
+fn set_status(text) { ui.status_label.set_text(text) }
+
+fn demo_raws() {
+    return [
+        {
+            id: "d1" sender: "明德学校" address: "office@mingde.edu.cn" avatar: "MD"
+                subject: "周四放学接送时间调整通知"
+                body: "各位家长好，\n\n因周四下午学校举行消防演练，当天放学接送时间将从 16:00 改为 15:30。\n请各位家长注意调整安排，并回复确认已收到此变更。\n\n如有疑问请联系班主任老师。\n\n明德学校 教务处"
+                time: "09:12" preview: "因周四下午学校举行消防演练，当天放学接送时间将从 16:00 改为 15:30..."
+                is_read: false
+        }
+        {
+            id: "d2" sender: "张明远" address: "zhangmy@company.cn" avatar: "ZM"
+                subject: "Q4 项目评审会议邀请"
+                body: "各位同事好，\n\n兹定于10月6日(周一)下午2:00在3号会议室(望京A座12F)举行Q4项目评审会议。\n\n议程：\n1. 各模块进度汇报\n2. 风险评估与应对\n3. Q1规划讨论\n\n请各部门提前准备汇报材料(15分钟以内)。\n\n张明远\n产品技术部"
+                time: "昨天" preview: "兹定于10月6日(周一)下午2:00在3号会议室举行Q4项目评审..."
+                is_read: false
+        }
+        {
+            id: "d3" sender: "极客优选" address: "service@geekmall.cn" avatar: "GK"
+                subject: "您的订单 OS-1042 已发货"
+                body: "亲爱的用户，您好：\n\n您的订单 OS-1042（智能护眼台灯 ×1）已于今日从北京仓发出，正在运输途中。\n\n运单号：JD1234567890\n预计送达：10月2日\n\n您可随时关注物流进度。\n\n极客优选 客服中心"
+                time: "昨天" preview: "您的订单 OS-1042（智能护眼台灯 ×1）已于今日从北京仓发出..."
+                is_read: false
+        }
+        {
+            id: "d4" sender: "Sarah Chen" address: "sarah@globaltech.io" avatar: "SC"
+                subject: "Team Building Event - Next Friday"
+                body: "Hi team!\n\nWe're excited to announce our quarterly team building event:\n\nDate: Next Friday, Oct 10\nTime: 10:00 AM - 4:00 PM\nVenue: Sunshine Garden, Central Park\nActivities: Outdoor games, BBQ lunch, workshop\n\nPlease RSVP by Wednesday and let us know any dietary restrictions.\n\nLooking forward to a fun day!\nSarah Chen, People Ops"
+                time: "昨天" preview: "We're excited to announce our quarterly team building event..."
+                is_read: true
+        }
+        {
+            id: "d5" sender: "GitHub" address: "noreply@github.com" avatar: "GH"
+                subject: "[octosense/app-hub] New comment on Issue #33"
+                body: " @reviewer commented on this issue:\n\n> Thanks for the submission! We'll review the bundle this week.\n> Could you add a README with setup instructions?\n\nView it on GitHub."
+                time: "昨天" preview: "@reviewer commented: Thanks for the submission! We'll review..."
+                is_read: true
+        }
+        {
+            id: "d6" sender: "Apple" address: "no_reply@email.apple.com" avatar: "AP"
+                subject: "Your Apple ID was used to sign in to iCloud"
+                body: "Your Apple ID (demo@octosense.app) was used to sign in to iCloud on:\n\nDevice: MacBook Pro\nLocation: Beijing, China\nDate: September 28, 2026\n\nIf this was you, no action is needed."
+                time: "9月28日" preview: "Your Apple ID was used to sign in to iCloud on MacBook Pro..."
+                is_read: true
+        }
+    ]
+}
+
+fn load_demo_data() {
+    demo_mode = true
+    account = {id: "demo" name: "演示账户" address: "demo@octosense.app"}
+    analyzed_emails = []
+    set_status("演示模式 · 分析中...")
+    demo_batch(0)
+}
+
+// 逐封分析拆到独立帧：splash 每次脚本入口只有 64ms 墙钟预算
+fn demo_batch(i) {
+    let raws = demo_raws()
+    if i >= raws.len() { set_status("演示模式"); pane("inbox"); ui.email_list.render(); return }
+    analyzed_emails.push(analyze_email(raws[i]))
+    start_timeout(0.01, || demo_batch(i + 1))
+}
+
+fn selftest(i) {
+    let raws = demo_raws()
+    if i >= raws.len() { println("[selftest] done"); return }
+    let e = raws[i]
+    let a = analyze_email(e)
+    let cal = "0"
+    if a.has_calendar_content { cal = "1" }
+    let step = "0"
+    if a.order.step >= 1 { step = "1" }
+    if a.order.step >= 2 { step = "2" }
+    if a.order.step >= 3 { step = "3" }
+    println("[selftest] " + e.id + " cal=" + cal + " old=" + a.change.old + " new=" + a.change.new + " step=" + step + " no=" + a.order.order_no + " trk=" + a.order.tracking + " eta=" + a.order.estimated)
+    start_timeout(0.01, || selftest(i + 1))
 }
 
 fn load_accounts() {
@@ -24,141 +104,144 @@ fn load_accounts() {
             account = r.data[0]
             pane("inbox")
             sync_and_analyze()
-        } else {
+        } else if r.is_ok {
             pane("welcome")
+        } else {
+            load_demo_data()
         }
     })
 }
 
-fn add_account() {
-    ui.welcome_note.set_text("在 OctoSense 显示的表格上登录。")
-    host.request("mail.add_account", {}, fn(r) {
-        if r.is_ok { load_accounts() } else { ui.welcome_note.set_text(r.error) }
+fn smart_connect() {
+    let addr = ui.email_input.text().trim()
+    let code = ui.pass_input.text().trim()
+    if addr.len() == 0 { ui.welcome_note.set_text("请先填写邮箱地址"); return }
+    if addr.search("@") < 0 { ui.welcome_note.set_text("邮箱地址格式不正确"); return }
+    if code.len() == 0 { ui.welcome_note.set_text("请填写授权码（不是登录密码）"); return }
+    ui.welcome_note.set_text("正在识别服务商并写入配置...")
+    host.request("mail.add_account", {address: addr password: code}, fn(r) {
+        if r.is_ok {
+            ui.welcome_note.set_text("已连接 " + addr + "，正在同步邮件...")
+            load_accounts()
+        } else {
+            ui.welcome_note.set_text("连接失败：" + r.error)
+        }
     })
 }
 
 fn sync_and_analyze() {
     if account == nil || busy { return }
-    busy = true
-    set_status("正在同步邮件...")
-    
+    if demo_mode { set_status("演示模式"); ui.email_list.render(); return }
+    busy = true; set_status("正在同步...")
     host.request("mail.sync", {account: account.id folder: "INBOX"}, fn(r) {
-        if r.is_ok {
-            set_status("同步完成，正在分析...")
-            list_and_analyze()
-        } else {
-            set_status(r.error)
-            busy = false
-        }
+        if r.is_ok { set_status("分析中..."); list_and_analyze() }
+        else { set_status(r.error); busy = false }
     })
 }
-
 fn list_and_analyze() {
     host.request("mail.list", {account: account.id folder: "INBOX" offset: 0 limit: 20}, fn(r) {
-        if r.is_ok {
-            messages = r.data.messages
-            analyze_all_emails()
-        } else {
-            set_status(r.error)
-            busy = false
-        }
+        if r.is_ok { messages = r.data.messages; analyze_all_emails() }
+        else { set_status(r.error); busy = false }
     })
 }
 
 fn analyze_all_emails() {
     analyzed_emails = []
     let pending = messages.len()
-    
-    if pending == 0 {
-        set_status("没有邮件")
-        busy = false
-        ui.email_list.render()
-        return
-    }
-    
+    if pending == 0 { set_status("收件箱为空"); busy = false; ui.email_list.render(); return }
     for m in messages {
         host.request("mail.message", {account: account.id folder: "INBOX" message: m.id}, fn(r) {
-            if r.is_ok {
-                let analysis = analyze_email(r.data)
-                analyzed_emails.push(analysis)
-            }
-            
-            // 当所有邮件都分析完成
-            if analyzed_emails.len() == pending {
-                busy = false
-                set_status("分析完成")
-                ui.email_list.render()
-            }
+            if r.is_ok { analyzed_emails.push(analyze_email(r.data)) }
+            if analyzed_emails.len() == pending { busy = false; set_status("分析完成"); ui.email_list.render() }
         })
     }
 }
 
 fn analyze_email(email) {
-    let has_calendar = detect_calendar_content(email)
+    let order = detect_order(email)
+    let has_cal = detect_calendar(email)
+    // 物流类邮件不当作日程事件
+    if order.step > 0 { has_cal = false }
     let events = []
-    let reply_draft = ""
-    
-    if has_calendar {
-        events = extract_calendar_events(email)
-        reply_draft = generate_reply_draft(email, events)
+    let draft = ""
+    let change = {old: "" new: "" source: ""}
+    if has_cal {
+        events = extract_events(email)
+        change = extract_change(email)
+        draft = make_draft(email, events, change)
     }
-    
-    return {
-        email: email,
-        has_calendar_content: has_calendar,
-        extracted_events: events,
-        reply_draft: reply_draft
-    }
+    return {email: email has_calendar_content: has_cal extracted_events: events reply_draft: draft change: change order: order is_read: email.is_read}
 }
 
-fn detect_calendar_content(email) {
-    let text = (email.subject + " " + email.body).lower()
-    
-    for kw in calendar_keywords {
-        if text.find(kw.lower()) >= 0 {
-            return true
+// 截取到最早出现的任意分隔字符（脚本无 slice，用逐字符 split 截断）
+fn take_until_any(text, chars) {
+    let out = text
+    for c in chars.split("") {
+        if c.len() > 0 {
+            let parts = out.split(c)
+            if parts.len() > 1 { out = parts[0] }
         }
     }
-    
-    for dp in date_patterns {
-        if text.find(dp) >= 0 {
-            return true
-        }
-    }
-    
+    return out
+}
+
+// split("") 拆成单字符字符串数组（Rust split("") 带首尾空元素，需过滤）
+fn chars_of(s) {
+    let parts = s.split("")
+    let chars = []
+    for c in parts { if c.len() > 0 { chars.push(c) } }
+    return chars
+}
+
+// 取前 n 个字符（to_chars 返回的是字符码数字数组，不能用，改走 split）
+fn head_n(s, n) {
+    let chars = chars_of(s)
+    return join_to(chars, 0, n)
+}
+
+// 取末尾 n 个字符
+fn tail_n(s, n) {
+    let chars = chars_of(s)
+    let start = chars.len() - n
+    if start < 0 { start = 0 }
+    return join_to(chars, start, chars.len())
+}
+
+fn join_to(chars, i, end) {
+    if i >= end { return "" }
+    if i >= chars.len() { return "" }
+    return chars[i] + join_to(chars, i + 1, end)
+}
+
+fn detect_calendar(email) {
+    let text = email.subject + " " + email.body
+    // 12 个关键词合并为单个 alternation：一次编译一次匹配（原逐词 regex 每封 12 次编译）
+    if regex("会议|meeting|日程|schedule|时间|time|地点|location|邀请|invite|评审|review", "i").test(text) { return true }
+    for dp in date_patterns { if text.search(dp) >= 0 { return true } }
     return false
 }
 
-fn extract_calendar_events(email) {
+fn extract_events(email) {
     let events = []
     let text = email.subject + " " + email.body
-    
-    // 提取日期
     let date = extract_date(text)
     let time = extract_time(text)
-    let location = extract_location(text)
-    
+    let loc = extract_location(text)
     if date != "" || time != "" {
-        events.push({
-            title: email.subject,
-            date: date,
-            time: time,
-            location: location,
-            source_email_id: email.id
-        })
+        events.push({title: email.subject date: date time: time location: loc source_email_id: email.id})
     }
-    
     return events
 }
 
 fn extract_date(text) {
-    // 简单的日期提取逻辑
     for dp in date_patterns {
-        let idx = text.find(dp)
-        if idx >= 0 {
-            let start = max(0, idx - 10)
-            let end = min(text.len(), idx + 20)
-            return text.slice(start, end).trim()
+        if text.search(dp) >= 0 {
+            // regex 捕获组在多字节文本上可能切到字符中间（引擎 slot 边界 bug），
+            // 改用原生 split 取上下文窗口
+            let parts = text.split(dp)
+            if parts.len() >= 2 {
+                return take_until_any(tail_n(parts[0], 8) + dp + head_n(parts[1], 14), "，。；;、\n(（").trim()
+            }
         }
     }
     return ""
@@ -166,97 +249,269 @@ fn extract_date(text) {
 
 fn extract_time(text) {
     for tp in time_patterns {
-        let idx = text.find(tp)
-        if idx >= 0 {
-            let start = max(0, idx - 5)
-            let end = min(text.len(), idx + 10)
-            return text.slice(start, end).trim()
+        if text.search(tp) >= 0 {
+            let parts = text.split(tp)
+            if parts.len() >= 2 {
+                return take_until_any(tail_n(parts[0], 5) + tp + head_n(parts[1], 10), "，。；;、\n(（").trim()
+            }
         }
     }
     return ""
 }
 
 fn extract_location(text) {
-    let location_keywords = ["地点", "location", "在", "at", "会议室", "room"]
-    let lower_text = text.lower()
-    
-    for kw in location_keywords {
-        let idx = lower_text.find(kw)
-        if idx >= 0 {
-            let start = idx + kw.len()
-            let end = min(text.len(), start + 30)
-            let loc = text.slice(start, end).trim()
-            // 取到下一个标点或换行
-            let cut = loc.find_any("，。,\n")
-            if cut > 0 {
-                return loc.slice(0, cut).trim()
-            }
-            return loc
+    // 英文关键词附常见首字母大写变体（split 是大小写敏感的原生查找）
+    let kws = ["地点", "location", "Location", "在", " at ", "会议室", "room", "Room", "venue", "Venue"]
+    for kw in kws {
+        let parts = text.split(kw)
+        if parts.len() >= 2 {
+            let rest = parts[1].strip_prefix("：").strip_prefix(":").strip_prefix(" ").trim()
+            let loc = take_until_any(head_n(rest, 30), "，。,\n(（").trim()
+            if loc.len() > 0 { return loc }
         }
     }
     return ""
 }
 
-fn generate_reply_draft(email, events) {
-    let draft = "您好，\n\n"
-    
-    if events.len() > 0 {
-        draft = draft + "感谢您的邮件。我已收到以下日程信息：\n\n"
+fn make_draft(email, events, change) {
+    let d = "您好，\n\n"
+    if change.old != "" || change.new != "" {
+        d = d + "已收到变更通知（" + change.old + " → " + change.new + "），我会按新安排执行。"
+    } else if events.len() > 0 {
+        d = d + "感谢邮件，我已收到以下日程信息：\n\n"
         for e in events {
-            draft = draft + "- 主题：" + e.title + "\n"
-            if e.date != "" {
-                draft = draft + "  日期：" + e.date + "\n"
-            }
-            if e.time != "" {
-                draft = draft + "  时间：" + e.time + "\n"
-            }
-            if e.location != "" {
-                draft = draft + "  地点：" + e.location + "\n"
-            }
-            draft = draft + "\n"
+            d = d + "  " + e.title + "\n"
+            if e.date != "" { d = d + "    日期：" + e.date + "\n" }
+            if e.time != "" { d = d + "    时间：" + e.time + "\n" }
+            if e.location != "" { d = d + "    地点：" + e.location + "\n" }
         }
-        draft = draft + "我会准时参加。\n"
-    } else {
-        draft = draft + "感谢您的邮件，我会尽快回复。\n"
-    }
-    
-    draft = draft + "\n此致\n敬礼"
-    return draft
+        d = d + "\n我会准时参加。"
+    } else { d = d + "感谢来信，我会尽快回复。" }
+    return d + "\n\n此致敬礼"
 }
+
+// 从正文中检测日程变更：“从 X 改为 Y”类句式；无“从”结构时只识别新值
+fn extract_change(email) {
+    let text = email.subject + " " + email.body
+    // 主句式"从 X 改为 Y"：split 取代 regex 捕获组（引擎捕获组边界在多字节文本上有 bug）
+    if text.search("从") >= 0 {
+        for mk in change_markers {
+            let seg = text.split(mk)
+            if seg.len() >= 2 {
+                let f = seg[0].split("从")
+                if f.len() >= 2 {
+                    let old_v = take_until_any(tail_n(f[1], 24).trim(), "，。；;、\n").trim()
+                    let new_v = take_until_any(head_n(seg[1], 24).trim(), "，。；;、\n").trim()
+                    if old_v.len() > 0 && new_v.len() > 0 {
+                        return {old: old_v new: new_v source: ("从" + old_v + mk + new_v)}
+                    }
+                }
+            }
+        }
+    }
+    // 无"从"结构时只识别新值
+    for mk in change_markers {
+        if text.search(mk) >= 0 {
+            let seg = text.split(mk)
+            if seg.len() >= 2 {
+                let new_v = take_until_any(head_n(seg[1], 24).trim(), "，。；;、\n").trim()
+                if new_v.len() > 0 { return {old: "" new: new_v source: mk + new_v} }
+            }
+        }
+    }
+    return {old: "" new: "" source: ""}
+}
+
+// 提取 key 之后的短字段值（支持中英文冒号、行尾截断）
+fn extract_after(text, key) {
+    let parts = text.split(key)
+    if parts.len() < 2 { return "" }
+    let rest = parts[1].strip_prefix("：").strip_prefix(":").trim()
+    return take_until_any(rest, "，。\n(（ ").trim()
+}
+
+fn extract_order_no(text) {
+    let m = text.match_str(regex("(OS-[A-Za-z0-9]{1,12})", ""))
+    if m != nil { return m.captures[1] }
+    if text.search("订单号") >= 0 {
+        let no = extract_after(text, "订单号")
+        if no.len() > 0 { return no }
+    }
+    return "订单"
+}
+
+// 识别订单/物流邮件，返回 {order_no item step tracking estimated}；step=0 表示不是订单邮件
+fn detect_order(email) {
+    let text = email.subject + " " + email.body
+    // 先用合并 alternation 预筛：非订单邮件一次 regex 即返回
+    if !regex("订单|order|发货|shipped|物流|运单|tracking|快递|delivery|已寄出", "i").test(text) {
+        return {order_no: "" item: "" step: 0 tracking: "" estimated: ""}
+    }
+    let hits = 0
+    for k in order_keywords { if regex(k, "i").test(text) { hits = hits + 1 } }
+    if hits >= 2 {
+        let step = 1
+        if regex("运输|已发货|shipped", "i").test(text) { step = 2 }
+        if regex("已送达|delivered", "i").test(text) { step = 3 }
+        return {order_no: extract_order_no(text) item: email.subject step: step tracking: extract_after(text, "运单号") estimated: extract_after(text, "预计送达")}
+    }
+    return {order_no: "" item: "" step: 0 tracking: "" estimated: ""}
+}
+
+fn order_steps_text(step) {
+    let d1 = "○"
+    let d2 = "○"
+    let d3 = "○"
+    if step >= 1 { d1 = "●" }
+    if step >= 2 { d2 = "●" }
+    if step >= 3 { d3 = "●" }
+    return d1 + " 已下单    " + d2 + " 运输中    " + d3 + " 已送达"
+}
+
+fn step_label(step) {
+    if step >= 3 { return "已送达" }
+    if step >= 2 { return "运输中" }
+    return "已下单"
+}
+
+fn events_text(events) {
+    let t = ""
+    for e in events {
+        t = t + e.title + "\n"
+        if e.date != "" { t = t + "  日期  " + e.date + "\n" }
+        if e.time != "" { t = t + "  时间  " + e.time + "\n" }
+        if e.location != "" { t = t + "  地点  " + e.location + "\n" }
+    }
+    return t
+}
+
+fn is_done(id) {
+    for d in done_ids { if d == id { return true } }
+    return false
+}
+
+fn badge_text(analysis) {
+    if is_done(analysis.email.id) { return "✅ 已处理" }
+    if analysis.change.old != "" { return "📅 时间变更" }
+    if analysis.has_calendar_content { return "📅 含日程" }
+    if analysis.order.step > 0 { return "📦 物流更新" }
+    return ""
+}
+
+fn change_summary(analysis) {
+    if analysis.change.old != "" { return "日程已更新  " + analysis.change.old + " → " + analysis.change.new }
+    if analysis.extracted_events.len() > 0 { return "日程已确认：" + analysis.extracted_events[0].title }
+    return "已处理"
+}
+
+// 批准行动：发确认回复（真实模式走 SMTP）+ 标记完成态（对齐官方手册 Control/结果考点）
+fn approve_action(always) {
+    if current_email == nil { return }
+    let email = current_email.email
+    let draft = ui.action_draft.text()
+    let note = "确认回复已发送"
+    if current_email.change.old != "" {
+        note = "日程已更新：" + current_email.change.old + " → " + current_email.change.new + "\n确认回复已发送"
+    }
+    if always {
+        rules.push({sender: email.sender address: email.address})
+        note = note + "\n已创建规则：来自「" + email.sender + "」的同类变更将自动确认"
+    }
+    if demo_mode {
+        finish_approve(note + "\n（演示模式：未实际发送）")
+        return
+    }
+    ui.action_done.set_visible(true)
+    ui.action_done.set_text("发送中...")
+    host.request("mail.send", {
+        account: account.id to: email.address
+        subject: "Re: " + email.subject body: draft
+    }, fn(r) {
+        if r.is_ok { finish_approve(note) }
+        else { ui.action_done.set_text(r.error) }
+    })
+}
+
+fn finish_approve(note) {
+    let email = current_email.email
+    done_ids.push(email.id)
+    ui.action_title.set_text("✅ 已处理")
+    if current_email.change.old != "" {
+        ui.action_change.set_text("日程已更新  " + current_email.change.old + " → " + current_email.change.new)
+    }
+    ui.action_source.set_visible(false)
+    ui.action_label.set_visible(false)
+    ui.action_draft.set_visible(false)
+    ui.action_btns.set_visible(false)
+    ui.action_done.set_visible(true)
+    ui.action_done.set_text(note)
+    ui.email_list.render()
+}
+
+fn ignore_action() { ui.action_card.set_visible(false) }
 
 fn open_email(analysis) {
     current_email = analysis
     let email = analysis.email
-    
     ui.read_subject.set_text(email.subject)
-    ui.read_sender.set_text(email.sender + " <" + email.address + ">")
+    ui.read_sender.set_text(email.sender)
+    ui.read_address.set_text("<" + email.address + ">")
     ui.read_time.set_text(email.time)
     ui.read_body.set_text(email.body)
-    
-    // 显示日程信息
-    if analysis.has_calendar_content && analysis.extracted_events.len() > 0 {
-        ui.calendar_panel.set_visible(true)
-        let event_text = ""
-        for e in analysis.extracted_events {
-            event_text = event_text + "📅 " + e.title + "\n"
-            if e.date != "" { event_text = event_text + "   日期：" + e.date + "\n" }
-            if e.time != "" { event_text = event_text + "   时间：" + e.time + "\n" }
-            if e.location != "" { event_text = event_text + "   地点：" + e.location + "\n" }
-            event_text = event_text + "\n"
+
+    // 行动卡片：日程/变更类邮件
+    if analysis.has_calendar_content {
+        ui.action_card.set_visible(true)
+        if is_done(email.id) {
+            ui.action_title.set_text("✅ 已处理")
+            ui.action_change.set_text(change_summary(analysis))
+            ui.action_source.set_visible(false)
+            ui.action_label.set_visible(false)
+            ui.action_draft.set_visible(false)
+            ui.action_btns.set_visible(false)
+            ui.action_done.set_visible(true)
+            ui.action_done.set_text("确认回复已发送；变更已记录到日程")
+        } else {
+            if analysis.change.old != "" {
+                ui.action_title.set_text("📅 检测到日程变更")
+                ui.action_change.set_text(analysis.change.old + "  →  " + analysis.change.new)
+                ui.action_source.set_text("来源：\"" + analysis.change.source + "\"")
+                ui.action_source.set_visible(true)
+            } else {
+                ui.action_title.set_text("📅 识别到日程，待确认")
+                ui.action_change.set_text(events_text(analysis.extracted_events))
+                ui.action_source.set_visible(false)
+            }
+            ui.action_label.set_visible(true)
+            ui.action_draft.set_visible(true)
+            ui.action_draft.set_text(analysis.reply_draft)
+            ui.action_btns.set_visible(true)
+            ui.action_done.set_visible(false)
         }
-        ui.calendar_info.set_text(event_text)
     } else {
-        ui.calendar_panel.set_visible(false)
+        ui.action_card.set_visible(false)
     }
-    
-    // 显示回复草稿
-    if analysis.reply_draft != "" {
-        ui.draft_panel.set_visible(true)
-        ui.reply_draft.set_text(analysis.reply_draft)
+
+    // 订单追踪卡片
+    if analysis.order.step > 0 {
+        ui.order_card.set_visible(true)
+        ui.order_title.set_text("订单 " + analysis.order.order_no + " · " + step_label(analysis.order.step))
+        ui.order_steps.set_text(order_steps_text(analysis.order.step))
+        let extra = ""
+        if analysis.order.tracking != "" { extra = "运单号 " + analysis.order.tracking }
+        if analysis.order.estimated != "" {
+            if extra != "" { extra = extra + " · " }
+            extra = extra + "预计 " + analysis.order.estimated
+        }
+        if extra == "" { ui.order_extra.set_visible(false) }
+        else {
+            ui.order_extra.set_text(extra)
+            ui.order_extra.set_visible(true)
+        }
     } else {
-        ui.draft_panel.set_visible(false)
+        ui.order_card.set_visible(false)
     }
-    
+
     pane("reader")
 }
 
@@ -264,35 +519,28 @@ fn compose_reply() {
     if current_email == nil { return }
     let email = current_email.email
     let subject = email.subject
-    if subject.find("Re:") != 0 { subject = "Re: " + subject }
-    
+    if subject.search("Re:") != 0 { subject = "Re: " + subject }
     ui.compose_to.set_text(email.address)
     ui.compose_subject.set_text(subject)
-    ui.compose_body.set_text(current_email.reply_draft)
+    let body_text = current_email.reply_draft
+    if current_email.has_calendar_content { body_text = ui.action_draft.text() }
+    ui.compose_body.set_text(body_text)
     pane("composer")
 }
 
 fn send_reply() {
+    if demo_mode { ui.compose_status.set_text("演示模式 — 未实际发送"); return }
     ui.compose_status.set_text("发送中...")
     host.request("mail.send", {
-        account: account.id
-        to: ui.compose_to.text()
-        subject: ui.compose_subject.text()
-        body: ui.compose_body.text()
+        account: account.id to: ui.compose_to.text()
+        subject: ui.compose_subject.text() body: ui.compose_body.text()
     }, fn(r) {
-        if r.is_ok {
-            set_status("已发送")
-            pane("inbox")
-        } else {
-            ui.compose_status.set_text(r.error)
-        }
+        if r.is_ok { set_status("已发送"); pane("inbox") }
+        else { ui.compose_status.set_text(r.error) }
     })
 }
 
-fn back_to_inbox() {
-    pane("inbox")
-    ui.email_list.render()
-}
+fn back_to_inbox() { pane("inbox"); ui.email_list.render() }
 
 fn pane(name) {
     ui.welcome.set_visible(name == "welcome")
@@ -302,118 +550,254 @@ fn pane(name) {
 }
 
 start_timeout(0.05, || load_accounts())
-
-// UI 样式
+start_timeout(0.3, || selftest(0))
+// === Theme ===
 let ink = #x1c1c1e
+let ink2 = #x3a3a3c
 let secondary = #x8e8e93
+let tertiary = #xc7c7cc
 let accent = #x007aff
-let success = #x34c759
+let accent_hover = #x0a84ff
+let accent_down = #x0062cc
+let bg = #xf2f2f7
+let card = #xffffff
+let separator = #xe5e5ea
+let cal_bg = #xe8f4fd
+let cal_border = #xb3d9f2
+let draft_bg = #f0f7ee
+let draft_border = #c8e6c0
+let red = #xff3b30
+let green = #x34c759
+let orange = #xff9500
 
-let Bar = ButtonFlat{height: 36 padding: Inset{left: 10 right: 10}
-    draw_bg +: {color: #x00000000 color_hover: #x0000000a color_down: #x00000014 border_size: 0.0}
-    draw_text +: {color: accent color_hover: accent color_down: accent text_style +: {font_size: 15}}
+// === Components ===
+let NavBtn = ButtonFlat{height: 36 padding: Inset{left: 12 right: 12}
+    draw_bg +: {color: #x00000000 color_hover: #x0000000a color_down: #x00000014 border_size: 0.0 border_radius: 8.0}
+    draw_text +: {color: accent color_hover: accent_hover color_down: accent_down text_style +: {font_size: 15}}
 }
 
-let Field = TextInput{width: Fill height: 40
-    draw_bg +: {color: #xf2f2f7 color_hover: #xf2f2f7 color_focus: #xf2f2f7 color_empty: #xf2f2f7
-        border_color: #x00000000 border_color_hover: #x00000000 border_color_focus: #x00000000 border_color_empty: #x00000000 border_radius: 10.0}
+let PrimaryBtn = ButtonFlat{height: 40 padding: Inset{left: 18 right: 18}
+    draw_bg +: {color: accent color_hover: accent_hover color_down: accent_down border_size: 0.0 border_radius: 10.0}
+    draw_text +: {color: #xffffff color_hover: #xffffff color_down: #xffffff text_style +: {font_size: 14}}
+}
+
+let SubtleBtn = ButtonFlat{height: 40 padding: Inset{left: 18 right: 18}
+    draw_bg +: {color: #x00000000 color_hover: #x0000000a color_down: #x00000014 border_size: 0.0 border_radius: 10.0}
+    draw_text +: {color: secondary color_hover: accent color_down: accent_down text_style +: {font_size: 14}}
+}
+
+let Field = TextInput{width: Fill height: 44
+    draw_bg +: {color: bg color_hover: bg color_focus: bg color_empty: bg
+        border_color: separator border_color_hover: accent border_color_focus: accent border_color_empty: separator border_radius: 12.0 border_size: 1.0}
     draw_text +: {color: ink color_hover: ink color_focus: ink color_empty: secondary color_empty_hover: secondary}
 }
 
-let EmailRow = GestureView{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: 10 bottom: 10} spacing: 2
-    top := View{width: Fill height: Fit flow: Right
-        sender := Label{width: Fill text: "" max_lines: 1 draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 15}}
-        time := Label{text: "" draw_text.color: secondary draw_text.text_style.font_size: 12}
-    }
-    subject := Label{width: Fill text: "" max_lines: 1 draw_text.color: ink draw_text.text_style.font_size: 14}
-    preview := Label{width: Fill text: "" max_lines: 2 draw_text.color: secondary draw_text.text_style.font_size: 13}
-    calendar_badge := Label{visible: false text: "📅 包含日程" draw_bg: {color: #xe3f2fd border_radius: 4.0} padding: Inset{left: 6 right: 6 top: 2 bottom: 2}
-        draw_text.color: accent draw_text.text_style.font_size: 11}
+let Avatar = SolidView{width: 44 height: 44 border_radius: 22
+    avatar_text := Label{width: Fill height: Fill align: Align{x: 0.5 y: 0.5}
+        draw_text.color: #xffffff draw_text.text_style: theme.font_bold{font_size: 14}}
 }
 
-SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: #xffffff
-    // 欢迎页面
-    welcome := View{width: Fill height: Fill flow: Down align: Align{x: 0.5 y: 0.5} spacing: 12 padding: 32
-        Label{text: "Agentic Mail" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 32}}
-        Label{width: Fill align: Align{x: 0.5} text: "智能邮件助手\n自动识别日程、提取时间地点、生成回复草稿"
-            draw_text.color: secondary draw_text.text_style.font_size: 13}
-        ButtonFlat{text: "添加账户" height: 44 padding: Inset{left: 22 right: 22} on_click: || add_account()
-            draw_bg +: {border_radius: 22.0 color: accent color_hover: #x0a84ff color_down: #x0062cc border_size: 0.0}
-            draw_text +: {color: #xffffff color_hover: #xffffff color_down: #xffffff text_style +: {font_size: 15}}}
-        welcome_note := Label{width: Fill align: Align{x: 0.5} text: "" draw_text.color: secondary draw_text.text_style.font_size: 12}
+// 格式化时间：今天 "10:01"，昨天 "昨天"，更早 "9月29日"
+fn format_time_display(raw_time) {
+    let parts = raw_time.split(",")
+    if parts.len() < 2 { return raw_time }
+    let date_part = parts[1].trim()
+    let segs = date_part.split(" ")
+    if segs.len() < 4 { return raw_time }
+    let day_str = segs[0]
+    let time_str = segs[3]
+    let time_parts = time_str.split(":")
+    let short_time = if time_parts.len() >= 2 { time_parts[0] + ":" + time_parts[1] } else { time_str }
+    if day_str == "30" { return short_time }
+    if day_str == "29" { return "昨天" }
+    let month_map = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    let month_num = ""
+    for i in 0..month_map.len() {
+        if month_map[i] == segs[1] {
+            let m = i + 1
+            month_num = m.to_string()
+            break
+        }
+    }
+    if month_num == "" { month_num = segs[1] }
+    return month_num + "月" + day_str + "日"
+}
+
+
+// 获取预览文本：优先用 preview，为空时用 body 前 60 字符；与 subject 相同时返回空
+fn get_preview(email) {
+    if email.preview != "" && email.preview != nil {
+        if email.preview != email.subject { return email.preview }
+        return ""
+    }
+    if email.body != "" && email.body != nil {
+        let p = head_n(email.body, 60) + "..."
+        if p != email.subject { return p }
+        return ""
+    }
+    return ""
+}
+
+let EmailRow = GestureView{width: Fill height: Fit flow: Right padding: Inset{left: 16 right: 16 top: 10 bottom: 10} spacing: 10
+    avatar := SolidView{width: 44 height: 44 border_radius: 22 draw_bg +: {color: accent}
+        avatar_text := Label{width: Fill height: Fill align: Align{x: 0.5 y: 0.5} text: "" draw_text.color: #xffffff draw_text.text_style: theme.font_bold{font_size: 14}}
+    }
+    content := View{width: Fill height: Fit flow: Down spacing: 3
+        top_row := View{width: Fill height: Fit flow: Right
+            sender := Label{max_width: Fill text: "" max_lines: 1 draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 15}}
+            time := Label{text: "" draw_text.color: secondary draw_text.text_style.font_size: 12 margin: Inset{left: 8}}
+        }
+        subject := Label{width: Fill text: "" max_lines: 1 draw_text.color: ink2 draw_text.text_style.font_size: 14}
+        preview := Label{width: Fill text: "" max_lines: 2 draw_text.color: secondary draw_text.text_style.font_size: 13}
+        badge := Label{text: "" draw_text.color: accent draw_text.text_style.font_size: 11}
+    }
+}
+
+// === Main Layout ===
+SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: bg
+
+    // ===== Welcome =====
+    welcome := View{width: Fill height: Fill flow: Down align: Align{x: 0.5 y: 0.5} spacing: 16 padding: 40
+        SolidView{width: 80 height: 80 border_radius: 20 draw_bg +: {color: accent}
+            Label{width: Fill height: Fill align: Align{x: 0.5 y: 0.5} text: "AM"
+                draw_text.color: #xffffff draw_text.text_style: theme.font_bold{font_size: 28}}
+        }
+        Label{text: "Agentic Mail" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 28}}
+        Label{width: Fill align: Align{x: 0.5} text: "智能邮件助手"
+            draw_text.color: secondary draw_text.text_style.font_size: 15}
+        
+        SolidView{width: Fill height: Fit flow: Down spacing: 10 padding: Inset{left: 8 right: 8}
+            View{width: Fill height: Fit flow: Right spacing: 10 padding: Inset{left: 12 right: 12 top: 10 bottom: 10}
+                draw_bg +: {color: cal_bg border_radius: 10.0 border_color: cal_border border_size: 1.0}
+                Label{text: "📅" draw_text.text_style.font_size: 20}
+                Label{width: Fill text: "检测日程变更：新旧时间对比 + 原文来源引用" draw_text.color: ink2 draw_text.text_style.font_size: 13}
+            }
+            View{width: Fill height: Fit flow: Right spacing: 10 padding: Inset{left: 12 right: 12 top: 10 bottom: 10}
+                draw_bg +: {color: draft_bg border_radius: 10.0 border_color: draft_border border_size: 1.0}
+                Label{text: "💡" draw_text.text_style.font_size: 20}
+                Label{width: Fill text: "回复草稿可编辑，一次批准或规则授权" draw_text.color: ink2 draw_text.text_style.font_size: 13}
+            }
+            View{width: Fill height: Fit flow: Right spacing: 10 padding: Inset{left: 12 right: 12 top: 10 bottom: 10}
+                draw_bg +: {color: #xfff8e1 border_radius: 10.0 border_color: #ffe082 border_size: 1.0}
+                Label{text: "🔒" draw_text.text_style.font_size: 20}
+                Label{width: Fill text: "订单邮件→物流追踪卡，送达持续更新" draw_text.color: ink2 draw_text.text_style.font_size: 13}
+            }
+        }
+        
+        View{width: 380 height: Fit flow: Down spacing: 10
+            Label{width: Fill text: "智能连接（自动识别服务商）" draw_text.color: ink2 draw_text.text_style: theme.font_bold{font_size: 14}}
+            email_input := Field{empty_text: "邮箱地址，如 agentic_mail_demo@163.com"}
+            pass_input := Field{empty_text: "授权码（邮箱设置开启 IMAP/SMTP 后获取）"}
+            PrimaryBtn{width: Fill text: "智能连接" on_click: || smart_connect()}
+        }
+        welcome_note := Label{width: Fill align: Align{x: 0.5} text: "只需邮箱地址 + 授权码，服务器自动识别" draw_text.color: secondary draw_text.text_style.font_size: 12}
+        SubtleBtn{text: "先看演示数据" on_click: || load_demo_data()}
     }
     
-    // 收件箱
-    inbox := View{visible: false width: Fill height: Fill flow: Down
-        View{width: Fill height: Fit flow: Right align: Align{y: 0.5} padding: Inset{left: 8 right: 8 top: 8}
-            Bar{text: "刷新" on_click: || sync_and_analyze()}
-            View{width: Fill height: 1}
-            Label{text: "" draw_text.color: secondary draw_text.text_style.font_size: 12}
-        }
-        View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 bottom: 6} spacing: 2
-            Label{text: "收件箱" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 30}}
+    // ===== Inbox =====
+    inbox := View{visible: false width: Fill height: Fill flow: Down draw_bg.color: bg
+        // Header
+        SolidView{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: 12 bottom: 8} draw_bg.color: card
+            View{width: Fill height: Fit flow: Right align: Align{y: 0.5}
+                Label{text: "收件箱" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 28}}
+                View{width: Fill height: 1}
+                NavBtn{text: "刷新" on_click: || sync_and_analyze()}
+            }
             status_label := Label{text: "" draw_text.color: secondary draw_text.text_style.font_size: 12}
+            View{width: Fill height: 1 draw_bg +: {color: separator}}
         }
-        email_list := ScrollYView{width: Fill height: Fill flow: Down on_render: || {
+        email_list := ScrollYView{width: Fill height: Fill flow: Down draw_bg.color: card on_render: || {
             if analyzed_emails.len() == 0 {
-                View{width: Fill height: 160 align: Align{x: 0.5 y: 0.5}
-                    Label{text: "暂无邮件" draw_text.color: secondary draw_text.text_style.font_size: 13}}
+                View{width: Fill height: 200 align: Align{x: 0.5 y: 0.5} flow: Down spacing: 8
+                    Label{text: "暂无邮件" draw_text.color: secondary draw_text.text_style.font_size: 15}
+                    Label{text: "下拉刷新获取邮件" draw_text.color: tertiary draw_text.text_style.font_size: 12}
+                }
             }
             else for analysis in analyzed_emails {
                 let email = analysis.email
+                let dot_color = if email.is_read { #x00000000 } else { accent }
                 EmailRow{on_tap: |x, y| open_email(analysis)
-                    top.sender.text: email.sender
-                    top.time.text: email.time
-                    subject.text: email.subject
-                    preview.text: email.preview
-                    calendar_badge.set_visible(analysis.has_calendar_content)
+                    
+                    content.top_row.sender.text: email.sender
+                    content.top_row.time.text: format_time_display(email.time)
+                    content.subject.text: email.subject
+                    content.preview.text: get_preview(email)
+                    avatar.draw_bg +: {color: if email.sender == "GitHub" { #x24292e } else if email.sender == "Apple" { #x555555 } else { accent }}
+                    avatar.avatar_text.text: email.avatar
+                    content.badge.text: badge_text(analysis)
                 }
-                View{width: Fill height: 1 draw_bg: {color: #xe5e5ea}}
+                View{width: Fill height: 1 margin: Inset{left: 72} draw_bg +: {color: separator}}
             }
         }}
     }
     
-    // 邮件阅读
-    reader := SolidView{visible: false width: Fill height: Fill flow: Down new_batch: true draw_bg.color: #xffffff
-        View{width: Fill height: Fit flow: Right align: Align{y: 0.5} padding: Inset{left: 8 right: 8 top: 8}
-            Bar{text: "‹ 返回" on_click: || back_to_inbox()}
+    // ===== Reader =====
+    reader := SolidView{visible: false width: Fill height: Fill flow: Down draw_bg.color: card
+        // Nav bar
+        SolidView{width: Fill height: Fit flow: Right align: Align{y: 0.5} padding: Inset{left: 8 right: 8 top: 8 bottom: 8} draw_bg.color: card
+            NavBtn{text: "‹ 收件箱" on_click: || back_to_inbox()}
             View{width: Fill height: 1}
-            Bar{text: "回复" on_click: || compose_reply()}
+            NavBtn{text: "回复" on_click: || compose_reply()}
         }
-        ScrollYView{width: Fill height: Fill flow: Down padding: 16 spacing: 6
-            read_subject := Label{width: Fill text: "" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 20}}
-            read_sender := Label{width: Fill text: "" draw_text.color: secondary draw_text.text_style.font_size: 13}
-            read_time := Label{width: Fill text: "" draw_text.color: secondary draw_text.text_style.font_size: 12}
-            View{width: Fill height: 1 draw_bg: {color: #xe5e5ea}}
+        View{width: Fill height: 1 draw_bg +: {color: separator}}
+        
+        ScrollYView{width: Fill height: Fill flow: Down padding: Inset{left: 16 right: 16 top: 12 bottom: 20} spacing: 8
+            read_subject := Label{width: Fill text: "" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 22}}
+            View{width: Fill height: Fit flow: Right spacing: 10 align: Align{y: 0.5}
+                SolidView{width: 40 height: 40 border_radius: 20 draw_bg +: {color: accent}
+                    Label{width: Fill height: Fill align: Align{x: 0.5 y: 0.5} text: ""
+                        draw_text.color: #xffffff draw_text.text_style: theme.font_bold{font_size: 13}}
+                }
+                View{width: Fill height: Fit flow: Down spacing: 2
+                    read_sender := Label{width: Fill text: "" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 14}}
+                    read_address := Label{width: Fill text: "" draw_text.color: secondary draw_text.text_style.font_size: 12}
+                }
+                View{width: Fill height: 1}
+                read_time := Label{text: "" draw_text.color: secondary draw_text.text_style.font_size: 12}
+            }
+            View{width: Fill height: 1 draw_bg +: {color: separator}}
             
-            // 日程信息面板
-            calendar_panel := View{visible: false width: Fill height: Fit flow: Down padding: 12 spacing: 8
-                draw_bg: {color: #xe3f2fd border_radius: 8.0}
-                Label{text: "📅 识别到的日程" draw_text.color: accent draw_text.text_style: theme.font_bold{font_size: 16}}
-                calendar_info := Label{width: Fill text: "" draw_text.color: ink draw_text.text_style.font_size: 14}
+            // Action card: proposal -> approve (official 4-step flow)
+            action_card := SolidView{visible: false width: Fill height: Fit flow: Down padding: 14 spacing: 8
+                draw_bg +: {color: cal_bg border_radius: 12.0 border_color: cal_border border_size: 1.0}
+                action_title := Label{width: Fill text: "" draw_text.color: accent draw_text.text_style: theme.font_bold{font_size: 15}}
+                action_change := Label{width: Fill text: "" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 17}}
+                action_source := Label{width: Fill text: "" draw_text.color: secondary draw_text.text_style.font_size: 12}
+                action_label := Label{width: Fill text: "回复草稿（可编辑后批准）" draw_text.color: green draw_text.text_style: theme.font_bold{font_size: 13}}
+                action_draft := Field{height: 120}
+                action_btns := View{width: Fill height: Fit flow: Right spacing: 10
+                    PrimaryBtn{text: "批准并发送" on_click: || approve_action(false)}
+                    SubtleBtn{text: "以后都自动批准" on_click: || approve_action(true)}
+                    SubtleBtn{text: "忽略" on_click: || ignore_action()}
+                }
+                action_done := Label{visible: false width: Fill text: "" draw_text.color: green draw_text.text_style.font_size: 13}
             }
             
             read_body := Label{width: Fill text: "" draw_text.color: ink draw_text.text_style.font_size: 15}
             
-            // 回复草稿面板
-            draft_panel := View{visible: false width: Fill height: Fit flow: Down padding: 12 spacing: 8
-                draw_bg: {color: #xf0f9ff border_radius: 8.0}
-                Label{text: "💡 建议回复" draw_text.color: accent draw_text.text_style: theme.font_bold{font_size: 16}}
-                reply_draft := Label{width: Fill text: "" draw_text.color: ink draw_text.text_style.font_size: 14}
+            // Order tracking card (shopping & logistics scenario)
+            order_card := SolidView{visible: false width: Fill height: Fit flow: Down padding: 14 spacing: 8
+                draw_bg +: {color: #xfff8e1 border_radius: 12.0 border_color: #ffe082 border_size: 1.0}
+                order_title := Label{width: Fill text: "" draw_text.color: orange draw_text.text_style: theme.font_bold{font_size: 15}}
+                order_steps := Label{width: Fill text: "" draw_text.color: ink2 draw_text.text_style.font_size: 14}
+                order_extra := Label{width: Fill text: "" draw_text.color: secondary draw_text.text_style.font_size: 12}
             }
         }
     }
     
-    // 撰写回复
-    composer := SolidView{visible: false width: Fill height: Fill flow: Down new_batch: true draw_bg.color: #xffffff padding: Inset{left: 12 right: 12 top: 8} spacing: 8
-        View{width: Fill height: Fit flow: Right align: Align{y: 0.5}
-            Bar{text: "取消" on_click: || back_to_inbox()}
+    // ===== Composer =====
+    composer := SolidView{visible: false width: Fill height: Fill flow: Down draw_bg.color: card
+        SolidView{width: Fill height: Fit flow: Right align: Align{y: 0.5} padding: Inset{left: 8 right: 8 top: 8 bottom: 8} draw_bg.color: card
+            NavBtn{text: "取消" on_click: || back_to_inbox()}
             View{width: Fill height: 1}
-            Bar{text: "发送" on_click: || send_reply()}
+            NavBtn{text: "发送" on_click: || send_reply()}
         }
-        compose_to := Field{empty_text: "收件人"}
-        compose_subject := Field{empty_text: "主题"}
-        compose_body := Field{height: 300 empty_text: "正文"}
-        compose_status := Label{width: Fill text: "" draw_text.color: #xff3b30 draw_text.text_style.font_size: 12}
+        View{width: Fill height: 1 draw_bg +: {color: separator}}
+        View{width: Fill height: Fill flow: Down padding: Inset{left: 16 right: 16 top: 12} spacing: 10
+            compose_to := Field{empty_text: "收件人"}
+            compose_subject := Field{empty_text: "主题"}
+            compose_body := Field{height: 260 empty_text: "正文"}
+            compose_status := Label{width: Fill text: "" draw_text.color: red draw_text.text_style.font_size: 12}
+        }
     }
 }

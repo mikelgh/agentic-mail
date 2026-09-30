@@ -1,0 +1,13 @@
+﻿# Local host state — contains mail account credentials (mail.json), never commit
+.local-state/
+
+# Rust build artifacts
+target/
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -486,7 +486,9 @@ fn open_email(analysis) {
                 ui.action_source.set_visible(true)
             } else {
                 ui.action_title.set_text("📅 识别到日程，待确认")
-                ui.action_change.set_text(events_text(analysis.extracted_events))
+                ui.action_change_old.set_text(events_text(analysis.extracted_events))
+                ui.action_change_arrow.set_text("")
+                ui.action_change_new.set_text("")
                 ui.action_source.set_visible(false)
             }
             ui.action_label.set_visible(true)

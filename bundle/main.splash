@@ -1,4 +1,4 @@
-// Agentic Mail v0.3 - 智能邮件助手
+﻿// Agentic Mail v0.3 - 智能邮件助手
 // 行动卡片：日程变更对比 | 来源引用 | 可编辑回复 | 授权规则 | 完成态 | 订单追踪
 
 let account = nil
@@ -151,8 +151,8 @@ fn analyze_all_emails() {
     if pending == 0 { set_status("收件箱为空"); busy = false; ui.email_list.render(); return }
     for m in messages {
         host.request("mail.message", {account: account.id folder: "INBOX" message: m.id}, fn(r) {
-            if r.is_ok { analyzed_emails.push(analyze_email(r.data)) }
-            if analyzed_emails.len() == pending { busy = false; set_status("分析完成"); ui.email_list.render() }
+            if r.is_ok { analyze_one_real(r.data, pending) }
+            if analyzed_emails.len() == pending { analyzed_emails = sort_emails_by_time(analyzed_emails); busy = false; set_status("分析完成"); ui.email_list.render() }
         })
     }
 }
@@ -171,6 +171,40 @@ fn analyze_email(email) {
         draft = make_draft(email, events, change)
     }
     return {email: email has_calendar_content: has_cal extracted_events: events reply_draft: draft change: change order: order is_read: email.is_read}
+}
+
+// LLM-powered analysis with rule-engine fallback
+fn analyze_one_real(email, pending) {
+    set_status("AI 分析中...")
+    host.request("mail.analyze", {subject: email.subject from: email.from body: email.body}, fn(ar) {
+        if ar.is_ok && ar.data != nil {
+            analyzed_emails.push(analysis_from_llm(email, ar.data))
+        } else {
+            analyzed_emails.push(analyze_email(email))
+        }
+        if analyzed_emails.len() == pending { analyzed_emails = sort_emails_by_time(analyzed_emails); busy = false; set_status("分析完成"); ui.email_list.render() }
+    })
+}
+
+// Map LLM response to the analysis structure expected by the UI
+fn analysis_from_llm(email, a) {
+    let events = []
+    if a.events != nil {
+        for e in a.events {
+            events.push({title: e.title date: e.date time: e.time location: e.location source_email_id: email.id})
+        }
+    }
+    let change = {old: "" new: "" source: ""}
+    if a.change != nil && (a.change.old != "" || a.change.new != "") {
+        change = {old: a.change.old new: a.change.new source: "llm"}
+    }
+    let order = {order_no: "" item: "" step: 0 tracking: "" estimated: ""}
+    if a.order != nil && a.order.step > 0 {
+        order = {order_no: a.order.order_no item: email.subject step: a.order.step tracking: a.order.tracking estimated: a.order.estimated}
+    }
+    let draft = a.reply_draft
+    if draft == "" || draft == nil { draft = make_draft(email, events, change) }
+    return {email: email has_calendar_content: a.is_calendar extracted_events: events reply_draft: draft change: change order: order is_read: email.is_read}
 }
 
 // 截取到最早出现的任意分隔字符（脚本无 slice，用逐字符 split 截断）
@@ -193,18 +227,28 @@ fn chars_of(s) {
     return chars
 }
 
-// 取前 n 个字符（to_chars 返回的是字符码数字数组，不能用，改走 split）
+// 取前 n 个字符：split("") 是原生调用不耗 VM 指令，只递归收集前 n 个非空元素。
+// 不可用 chars_of 全量循环——真实邮件正文可达数万字符，O(len) VM 循环会撞 20M 指令预算
 fn head_n(s, n) {
-    let chars = chars_of(s)
-    return join_to(chars, 0, n)
+    return head_take(s.split(""), 0, n, "")
+}
+fn head_take(parts, i, n, acc) {
+    if n <= 0 || i >= parts.len() { return acc }
+    let c = parts[i]
+    if c.len() > 0 { return head_take(parts, i + 1, n - 1, acc + c) }
+    return head_take(parts, i + 1, n, acc)
 }
 
-// 取末尾 n 个字符
+// 取末尾 n 个字符：从数组尾部反向收集，同样 O(n)
 fn tail_n(s, n) {
-    let chars = chars_of(s)
-    let start = chars.len() - n
-    if start < 0 { start = 0 }
-    return join_to(chars, start, chars.len())
+    let parts = s.split("")
+    return tail_take(parts, parts.len() - 1, n, "")
+}
+fn tail_take(parts, i, n, acc) {
+    if n <= 0 || i < 0 { return acc }
+    let c = parts[i]
+    if c.len() > 0 { return tail_take(parts, i - 1, n - 1, c + acc) }
+    return tail_take(parts, i - 1, n, acc)
 }
 
 fn join_to(chars, i, end) {
@@ -214,6 +258,10 @@ fn join_to(chars, i, end) {
 }
 
 fn detect_calendar(email) {
+    // 机器通知/安全/营销类邮件不是日程：主题或发件地址命中黑名单直接排除
+    // （只查 subject+address，不查正文——正文里"风险评估"等词会误杀真会议邮件）
+    let from_src = email.address + " " + email.subject
+    if regex("noreply|no.reply|no_reply|安全通知|账号安全|密码|登录|新设备|验证|优惠|促销|广告|欢迎|security|alert|newsletter|sign in", "i").test(from_src) { return false }
     let text = email.subject + " " + email.body
     // 12 个关键词合并为单个 alternation：一次编译一次匹配（原逐词 regex 每封 12 次编译）
     if regex("会议|meeting|日程|schedule|时间|time|地点|location|邀请|invite|评审|review", "i").test(text) { return true }
@@ -240,11 +288,19 @@ fn extract_date(text) {
             // 改用原生 split 取上下文窗口
             let parts = text.split(dp)
             if parts.len() >= 2 {
-                return take_until_any(tail_n(parts[0], 8) + dp + head_n(parts[1], 14), "，。；;、\n(（").trim()
+                let cand = take_until_any(tail_n(parts[0], 8) + dp + head_n(parts[1], 14), "，。；;、\n(（").trim()
+                if valid_date(cand) { return cand }
             }
         }
     }
     return ""
+}
+
+// 日期提取有效性：必须含数字或周/今/明/后天等日历词，否则是切出来的垃圾片段
+fn valid_date(s) {
+    if s.len() == 0 || s.len() > 40 { return false }
+    if s.search("\n") >= 0 { return false }
+    return regex("[0-9]|周[一二三四五六日末]|今天|明天|后天|上午|下午|晚上", "").test(s)
 }
 
 fn extract_time(text) {
@@ -252,11 +308,20 @@ fn extract_time(text) {
         if text.search(tp) >= 0 {
             let parts = text.split(tp)
             if parts.len() >= 2 {
-                return take_until_any(tail_n(parts[0], 5) + tp + head_n(parts[1], 10), "，。；;、\n(（").trim()
+                let cand = take_until_any(tail_n(parts[0], 5) + tp + head_n(parts[1], 10), "，。；;、\n(（").trim()
+                if valid_time(cand) { return cand }
             }
         }
     }
     return ""
+}
+
+// 时间提取有效性：必须含数字且带时间特征字符
+fn valid_time(s) {
+    if s.len() == 0 || s.len() > 30 { return false }
+    if s.search("\n") >= 0 { return false }
+    if !regex("[0-9]", "").test(s) { return false }
+    return regex("点|:|：|时|分|am|pm|上午|下午|晚上", "i").test(s)
 }
 
 fn extract_location(text) {
@@ -267,10 +332,17 @@ fn extract_location(text) {
         if parts.len() >= 2 {
             let rest = parts[1].strip_prefix("：").strip_prefix(":").strip_prefix(" ").trim()
             let loc = take_until_any(head_n(rest, 30), "，。,\n(（").trim()
-            if loc.len() > 0 { return loc }
+            if valid_location(loc) { return loc }
         }
     }
     return ""
+}
+
+// 地点提取有效性：含数字或场所词（"在"是高频单字，没有校验会把"潜在风险"切成"风险"）
+fn valid_location(s) {
+    if s.len() == 0 || s.len() > 60 { return false }
+    if s.search("\n") >= 0 { return false }
+    return regex("[0-9]|室|楼|座|厅|园|场|路|街|号|广场|大厦|酒店|center|park|building|hall|room|garden", "i").test(s)
 }
 
 fn make_draft(email, events, change) {
@@ -393,7 +465,7 @@ fn is_done(id) {
 fn badge_text(analysis) {
     if is_done(analysis.email.id) { return "✅ 已处理" }
     if analysis.change.old != "" { return "📅 时间变更" }
-    if analysis.has_calendar_content { return "📅 含日程" }
+    if analysis.extracted_events.len() > 0 { return "📅 含日程" }
     if analysis.order.step > 0 { return "📦 物流更新" }
     return ""
 }
@@ -460,10 +532,12 @@ fn open_email(analysis) {
     ui.read_address.set_text("<" + email.address + ">")
     ui.read_avatar_text.set_text(email.avatar)
     ui.read_time.set_text(format_time_display(email.time))
-    ui.read_body.set_text(email.body)
+    let body_text = email.body
+    if body_text == "" || body_text == nil { body_text = "（正文暂未同步，仅加载了邮件头）" }
+    ui.read_body.set_text(body_text)
 
-    // 行动卡片：日程/变更类邮件
-    if analysis.has_calendar_content {
+    // 行动卡片：只有提取到有效事件或变更才显示（防"识别到日程"误报到通知类邮件）
+    if analysis.has_calendar_content && (analysis.extracted_events.len() > 0 || analysis.change.old != "") {
         ui.action_card.set_visible(true)
         if is_done(email.id) {
             ui.action_title.set_text("✅ 已处理")
@@ -790,7 +864,7 @@ SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: bg
                 action_done := Label{visible: false width: Fill text: "" draw_text.color: green draw_text.text_style.font_size: 13}
             }
             
-            read_body := Label{width: Fill text: "" draw_text.color: ink draw_text.text_style.font_size: 15}
+            read_body := Label{width: Fill height: Fit text: "" draw_text.color: ink draw_text.text_style.font_size: 15}
             
             // Order tracking card (shopping & logistics scenario)
             order_card := SolidView{visible: false width: Fill height: Fit flow: Down padding: 14 spacing: 8
@@ -825,4 +899,47 @@ SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: bg
             compose_status := Label{width: Fill text: "" draw_text.color: red draw_text.text_style.font_size: 12}
         }
     }
+}
+
+fn parse_time_to_comparable(raw_time) {
+    let parts = raw_time.split(",")
+    if parts.len() < 2 { return "000000000000" }
+    let date_part = parts[1].trim()
+    let segs = date_part.split(" ")
+    if segs.len() < 4 { return "000000000000" }
+    let day = segs[0]
+    let month_str = segs[1]
+    let year = segs[2]
+    let time_str = segs[3]
+    let month_map = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    let month = "00"
+    for i in 0..month_map.len() {
+        if month_map[i] == month_str {
+            let m = i + 1
+            month = if m < 10 { "0" + m.to_string() } else { m.to_string() }
+            break
+        }
+    }
+    let day_pad = if day.len() == 1 { "0" + day } else { day }
+    let time_parts = time_str.split(":")
+    let hh = if time_parts.len() >= 1 { time_parts[0] } else { "00" }
+    let mm = if time_parts.len() >= 2 { time_parts[1] } else { "00" }
+    return year + month + day_pad + hh + mm
+}
+
+fn sort_emails_by_time(emails) {
+    let n = emails.len()
+    if n <= 1 { return emails }
+    for i in 0..n {
+        for j in 0..(n - i - 1) {
+            let t1 = parse_time_to_comparable(emails[j].email.time)
+            let t2 = parse_time_to_comparable(emails[j + 1].email.time)
+            if t1 < t2 {
+                let tmp = emails[j]
+                emails[j] = emails[j + 1]
+                emails[j + 1] = tmp
+            }
+        }
+    }
+    return emails
 }

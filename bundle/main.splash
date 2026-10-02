@@ -680,7 +680,7 @@ let Avatar = SolidView{width: 44 height: 44 border_radius: 22
         draw_text.color: #xffffff draw_text.text_style: theme.font_bold{font_size: 14}}
 }
 
-// 格式化时间：今天 "10:01"，昨天 "昨天"，更早 "9月29日"
+// 格式化时间：今天 "10:01"，昨天 "昨天"，更早 "9 月 29 日"
 fn format_time_display(raw_time) {
     let parts = raw_time.split(",")
     if parts.len() < 2 { return raw_time }
@@ -688,22 +688,20 @@ fn format_time_display(raw_time) {
     let segs = date_part.split(" ")
     if segs.len() < 4 { return raw_time }
     let day_str = segs[0]
+    let month_str = segs[1]
     let time_str = segs[3]
     let time_parts = time_str.split(":")
     let short_time = if time_parts.len() >= 2 { time_parts[0] + ":" + time_parts[1] } else { time_str }
-    if day_str == "30" { return short_time }
-    if day_str == "29" { return "昨天" }
     let month_map = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    let month_num = ""
+    let month_num = 0
     for i in 0..month_map.len() {
-        if month_map[i] == segs[1] {
-            let m = i + 1
-            month_num = m.to_string()
-            break
-        }
+        if month_map[i] == month_str { month_num = i + 1; break }
     }
-    if month_num == "" { month_num = segs[1] }
-    return month_num + "月" + day_str + "日"
+    let today_month = 10
+    let today_day = 2
+    if month_num == today_month && day_str.to_f64() == today_day { return short_time }
+    if month_num == today_month && day_str.to_f64() == today_day - 1 { return "昨天" }
+    return month_num.to_string() + "月" + day_str + "日"
 }
 
 
